@@ -1,0 +1,224 @@
+---
+title: "PML Project"
+---
+
+### Synopsis:
+##### After some initial exploratory analysis we are able to reduce the number of predictors down from 160 to 60 since there are many variables that consist of mostly missing data.  The data is pretty varied and non normal so tree based models seem to be likely candidates.  Decision Trees end up fitting poorly, and Random Forests at first seemed too good to be true.  After removing some variables that may be overfitting the model we settle on a final Random Forest model with an Out of Sample Error expected to be around 5%. The 95% Confidence Interval for Accuracy was (94.25%, 95.64%) on this model.
+
+### Model selection Steps below
+
+#####Load the data.
+
+```{r,echo = FALSE}
+library(caret)
+library(rattle)
+```
+```{r}
+set.seed(123)
+pth1 <- 'C:/Users/Signor/Desktop/Practical Machine Learning/'
+trn.f <- 'pml-training.csv'
+tst.f <- 'pml-testing.csv'
+trn <- paste(pth1,trn.f, sep = '')
+tst <- paste(pth1,tst.f, sep = '')
+
+all.data <- read.csv (trn,header=T, sep=",");
+
+cases <- read.csv (tst,header=T, sep=",");
+```
+
+#####Take a quick look at the variables (output suppressed)
+```{r, eval = FALSE}
+str(all.data)
+str(cases)
+```
+
+#####Partition the data into training and testing sets.
+```{r}
+
+inTrain = createDataPartition(all.data$classe, p = .6)[[1]]
+training = all.data[ inTrain,]
+remain = all.data[-inTrain,]
+
+inTest = createDataPartition(remain$classe, p = .5)[[1]]
+testing = remain[ inTest,]
+validation = remain[-inTest,]
+```
+
+#####Check the data to see if there are variables with a lot of missing information.
+
+```{r}
+na.percent <- rbind(sum(is.na(training[,1]))/nrow(training))
+for(i in 2:160){
+  na.percent[i] <- rbind(sum(is.na(training[,i]))/nrow(training))
+}
+table(na.percent)
+blank.percent <- rbind(sum(training[,1]== '')/nrow(training))
+for(i in 1:160){
+  blank.percent[i] <- rbind(sum(training[,i]== '')/nrow(training))
+}
+table(blank.percent)
+```
+
+```{r, eval = FALSE}
+summary(training)
+```
+```{r}
+tmp.remove <- as.data.frame(cbind(na.percent,blank.percent))
+tmp.remove$drop <- ((tmp.remove$na.percent > .7) | (tmp.remove$blank.percent > .7))
+table(tmp.remove$drop)
+```
+#####100 variables have mostly missing data so they will be dropped, leaving 60 variables to begin with.
+
+```{r}
+drops <- as.data.frame(t(tmp.remove$drop))
+var.names <- names(training)
+names(drops) <- var.names
+keep <- drops
+for(i in 160:1){
+  if (keep[,i] == TRUE) {
+    keep[,i] <- NULL
+  } 
+}
+
+list <- names(keep)
+use <- training[,list]
+```
+```{r, eval = FALSE}
+str(use)
+summary(use)
+```
+
+#####Checking to see if the remaining variables show little variance. (output suppressed)
+```{r, eval = FALSE}
+nsv <- nearZeroVar(use, saveMetrics = TRUE)
+nsv
+```
+
+
+#####Look at the plots of the variables to see what they look like (Normality/Scale etc.) to help decide what kinds of models to try. (output suppressed)
+
+```{r, eval = FALSE}
+
+n = ncol(use)
+for(i in 60:1){
+  if (is.numeric(use[,i])){
+    hist(use[,i],xlab = paste('var',i,': ',list[i]),main = paste('type: ',class(use[,i])))
+  }
+  if (is.numeric(use[,i])==FALSE){
+    plot(use[,i],xlab = paste('var',i,': ',list[i]),main = paste('type','(',nlevels(use[,i]),'): ',class(use[,i])))
+  }
+}
+n = ncol(use)
+for(i in 59:1){
+  if (is.numeric(use[,i])){
+    plot(use[,i],use$classe,xlab = paste('var',i,': ',list[i]),main = paste('type: ',class(use[,i])))
+  }
+  if (is.numeric(use[,i])==FALSE){
+    plot(use[,i],use$classe,xlab = paste('var',i,': ',list[i]),main = paste('type','(',nlevels(use[,i]),'): ',class(use[,i])))
+  }
+}
+```
+
+#####The data is pretty variable, and most of it does not appear to follow the normal distribution.  A Decision Tree or Random Forest model will probably be the best algorithm.  
+
+#####Create folds in the training set to compare multiple models.
+```{r}
+
+k.num <- 6
+folds <- createFolds(y = use$classe, k=k.num, list = TRUE, returnTrain = FALSE)
+fold1.train <- use[folds$Fold1,]
+fold2.train <- use[folds$Fold2,]
+fold3.train <- use[folds$Fold3,]
+fold4.train <- use[folds$Fold4,]
+fold5.train <- use[folds$Fold5,]
+fold6.train <- use[folds$Fold6,]
+
+```
+
+#####First model is a Decision Tree using all 60 variables.
+```{r}
+
+modFit1 <- train(classe ~ ., method = "rpart", data = fold1.train)
+print(modFit1$finalModel)
+fancyRpartPlot(modFit1$finalModel)
+
+p1 <- predict(modFit1,newdata = testing)
+cM1 <- confusionMatrix(p1,testing$classe)
+cM1$table
+cM1$overall
+
+```
+#####Pretty poor fit (66.12%)
+
+#####Second model is a Random Forest using all 60 variables:
+```{r, cache = TRUE}
+
+
+modFit2 <- train(classe ~ ., data = fold2.train, method = 'rf', prox=TRUE)
+varImp(modFit2)
+
+p2 <- predict(modFit2,newdata = testing)
+cM2 <- confusionMatrix(p2,testing$classe)
+cM2$table
+cM2$overall
+```
+#####Incredible accuracy (99.82%) may be the result of overfitting.
+#####The 'X' varaible is the most important in both of these first two models, but is really just an arbitrary variable for the order in which the data was collected so we remove it from the data set and try another Decision Tree and Random Forest.
+
+```{r}
+fold3.train$X <- NULL
+
+modFit3 <- train(classe ~ ., method = "rpart", data = fold3.train)
+print(modFit3$finalModel)
+fancyRpartPlot(modFit3$finalModel)
+
+p3 <- predict(modFit3,newdata = testing)
+cM3 <- confusionMatrix(p3,testing$classe)
+cM3$table
+cM3$overall
+```
+
+```{r, cache = TRUE}
+fold4.train$X <- NULL
+
+modFit4 <- train(classe ~ ., data = fold4.train, method = 'rf', prox=TRUE)
+varImp(modFit4)
+
+p4 <- predict(modFit4,newdata = testing)
+cM4 <- confusionMatrix(p4,testing$classe)
+cM4$table
+cM4$overall
+```
+#####The Decision Tree model is not very good (58.83% accuracy) so it seems a Decision Tree may not be the way to go.
+#####The new Random Forest Model was still really good (99.08% accuracy) so that will be the type of model to use, but it may still be overfitting.  The num_window and timestamp variables are some of the more important in the model but will not be relatable to data collected in the future. Let's try another Random Forest with just the measurement variables in the Data Set, removing the variables related to the user and time of the activity.  This will probably most accurately reflect how well the model can do to predict data that happens in the future.
+```{r, cache = TRUE}
+fold5.train$X <- NULL
+fold5.train$user_name <- NULL
+fold5.train$raw_timestamp_part_1 <- NULL
+fold5.train$raw_timestamp_part_2 <- NULL
+fold5.train$cvtd_timestamp <- NULL
+fold5.train$new_window <- NULL
+fold5.train$num_window <- NULL
+
+modFit5 <- train(classe ~ ., data = fold5.train, method = 'rf', prox=TRUE)
+varImp(modFit5)
+
+p5 <- predict(modFit5,newdata = testing)
+cM5 <- confusionMatrix(p5,testing$classe)
+cM5$table
+cM5$overall
+
+```
+##### Pretty good (95.36%) performance overall, so this will be the Final Model.
+
+#####Testing the Model on the validation set to estimate Out of Sample Error.
+```{r, cache = TRUE}
+pred.val <- predict(modFit5,newdata = validation)
+confusionMatrix(pred.val,validation$classe)
+
+```
+#####Predict values of 20 cases for submission.
+```{r, eval = FALSE}
+cases.pred <- predict(modFit5,newdata = cases)
+
+```
